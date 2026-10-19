@@ -1,0 +1,11 @@
+{
+  "urls": [
+    ["mqttmanager/__init__.py", "github:alezm00/ESP32-mqtt/mqttmanager/__init__.py"],
+    ["mqttmanager/client.py", "github:alezm00/ESP32-mqtt/mqttmanager/client.py"],
+    ["mqttmanager/manager.py", "github:alezm00/ESP32-mqtt/mqttmanager/manager.py"]
+  ],
+  "deps": [
+    ["github:alezm00/ESP32-wifi", "main"]
+  ],
+  "version": "1.0.0"
+}
