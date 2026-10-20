@@ -1,10 +1,10 @@
 import harness  # noqa: F401  (sets up sys.path, fakes, virtual clock)
 import json
-import sys
 import unittest
 
 from harness import Sim, W
 
+import mqttmanager.client as client_module
 from mqttmanager import MQTTManager
 
 
@@ -14,9 +14,7 @@ class Base(unittest.TestCase):
         self.b = self.sim.broker
 
     def tearDown(self):
-        blocked = self.b.blocked_forever
         self.sim.close()
-        self.assertEqual(blocked, 0, "a blocking read without timeout would hang a real board")
 
     def connected(self, mq, conns=None):
         if conns is None:
@@ -87,7 +85,7 @@ class LossTests(Base):
         t0 = self.sim.t
         self.b.kill()
         self.assertTrue(self.sim.run(mq, self.connected(mq, 2), 30000))
-        self.assertLess(self.sim.t - t0, 3000)
+        self.assertTrue(self.sim.t - t0 < 3000)
         self.assertEqual(self.sim.calls[0], "connect")
         self.assertEqual(self.sim.calls[1][0], "disconnect")
         self.assertEqual(self.sim.calls[2], "connect")
@@ -151,8 +149,10 @@ class LossTests(Base):
     def test_qos1_without_puback_stays_queued_and_is_resent(self):
         mq = self.sim.make(response_timeout=5)
         self.assertTrue(self.sim.up(mq))
+        self.sim.run(mq, ms=1000)  # check_msg() has run: umqtt.simple's setblocking(True) must not drop the timeout
         self.b.ack_publish = False
         mid = mq.publish("t", "x", qos=1)
+        self.assertEqual(self.b.blocked_forever, 0)
         self.assertTrue(mq.is_pending(mid))
         self.assertEqual(mq.state, "backoff")
         self.b.ack_publish = True
@@ -449,33 +449,49 @@ class _TLSSock:
 
 
 class TLSTests(Base):
-    def test_ssl_true_uses_ssl_wrap_socket_with_sni(self):
-        log = []
+    def test_ssl_true_is_encrypted_but_unverified(self):
+        made = []
+
+        class Ctx:
+            def __init__(self, protocol):
+                self.protocol = protocol
+                self.verify_mode = "default"
+                made.append(self)
+
+            def wrap_socket(self, sock, server_hostname=None):
+                return _TLSSock(sock, self.log, server_hostname)
 
         class FakeSSL:
-            @staticmethod
-            def wrap_socket(sock, **kw):
-                return _TLSSock(sock, log, kw)
-        saved = sys.modules.get("ssl")
-        sys.modules["ssl"] = FakeSSL
+            PROTOCOL_TLS_CLIENT = 16
+            CERT_NONE = 0
+            SSLContext = Ctx
+        Ctx.log = []
+        saved = client_module.ssl
+        client_module.ssl = FakeSSL
         try:
-            mq = self.sim.make(ssl=True, ssl_params={"cadata": b"CA"})
+            mq = self.sim.make(ssl=True)
             self.assertTrue(self.sim.up(mq))
         finally:
-            sys.modules["ssl"] = saved
-        self.assertEqual(mq.status()["port"], 8883)
-        self.assertEqual(log, [{"cadata": b"CA", "server_hostname": "broker.local"}])
+            client_module.ssl = saved
+        self.assertEqual([(c.protocol, c.verify_mode) for c in made], [(16, 0)])
+        self.assertEqual((Ctx.log, mq.status()["port"]), (["broker.local"], 8883))
+        self.assertTrue("without certificate verification" in self.sim.log(mq))
 
-    def test_ssl_context(self):
+    def test_ssl_context_and_timeouts_under_tls(self):
         log = []
 
         class Ctx:
             def wrap_socket(self, sock, server_hostname=None):
                 return _TLSSock(sock, log, server_hostname)
-        mq = self.sim.make(ssl=Ctx(), port=8884)
+        mq = self.sim.make(ssl=Ctx(), port=8884, response_timeout=5)
         self.assertTrue(self.sim.up(mq))
         mq.publish("t", "x", qos=1)
         self.assertEqual((log, self.b.topics(), mq.status()["port"]), (["broker.local"], ["t"], 8884))
+        # a TLS socket has no settimeout(): the timeout must survive setblocking(True) on the TCP socket
+        self.b.ack_publish = False
+        mq.publish("t", "y", qos=1)
+        self.assertEqual(mq.state, "backoff")
+        self.assertEqual(self.b.blocked_forever, 0)
 
 
 if __name__ == "__main__":

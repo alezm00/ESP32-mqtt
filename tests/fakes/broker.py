@@ -6,7 +6,7 @@
 The broker parses every packet as soon as the client writes it and queues its answers for the
 client's next read, so nothing ever waits in real time. A blocking read with nothing to return
 advances the clock by the socket timeout and raises ETIMEDOUT, like lwIP does.
-Runs on CPython and on MicroPython (tests/mp_smoke.py).
+Runs on the MicroPython unix port (stdlib only: no struct, no os.path).
 """
 ECONNRESET = 104
 ETIMEDOUT = 110
@@ -105,13 +105,13 @@ class FakeSocket:
         self.conn = Conn(b)
         b.conns.append(self.conn)
 
-    def write(self, buf):
+    def write(self, buf, n=None):
         c = self.conn
         if c is None or self.closed:
             raise OSError(EBADF)
         if c.dead or not c.open:
             raise OSError(ECONNRESET)
-        data = bytes(buf)
+        data = bytes(buf) if n is None else bytes(buf)[:n]
         c.inbuf += data
         self.b._process(c)
         return len(data)

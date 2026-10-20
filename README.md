@@ -35,11 +35,11 @@ mpremote cp -r deps/ESP32-wifi/wifimanager :lib/
 mpremote cp -r mqttmanager :lib/
 ```
 
-`umqtt.simple` is frozen in the official ESP32 firmware, so there is nothing to install. On a custom firmware without it, run
-`mpremote mip install umqtt.simple`. Every version shipped since MicroPython 1.20 works: 1.3.4, 1.4.0, 1.6.0 and 1.8.1 differ in their
-APIs, and `mqttmanager` handles the differences (all four are tested).
+`umqtt.simple` (1.8.0) is frozen in the official ESP32 firmware, so there is nothing to install. On a custom firmware without it, run
+`mpremote mip install umqtt.simple`.
 
-Requirements: MicroPython ≥ 1.20 for ESP32 (ESP32, S2, S3, C3). Flash use ≈ 35 kB of `.py`, ≈ 12 kB compiled with `mpy-cross`.
+Requirements: **MicroPython v1.29.0** (the latest release; older firmware is not supported) on ESP32, S2, S3 or C3, with
+`wifimanager` 2.0. Flash use ≈ 33 kB of `.py`, ≈ 12 kB compiled with `mpy-cross`.
 
 ## 2. Quick start
 
@@ -178,9 +178,21 @@ inside `wm.check()`, so the broker may drop you meanwhile. Use asyncio if that m
 | `user` / `password` | `None` | broker credentials |
 | `keepalive` | `60` | seconds (sent in CONNECT); pings after `keepalive/2` s of silence. `0` disables |
 | `clean_session` | `True` | `False` keeps the session (QoS 1 messages for you are kept by the broker while offline) |
-| `ssl` / `ssl_params` | `False` / `None` | `True` = TLS via `ssl.wrap_socket(**ssl_params)` (SNI added automatically), or an `ssl.SSLContext` (MicroPython ≥ 1.23) |
+| `ssl` | `None` | an `ssl.SSLContext` (TLS, certificate verified as the context says), or `True`: encrypted but **not verified** (a warning is logged). See below |
 | `connect_timeout` | `10` | seconds for TCP + TLS + CONNACK |
 | `response_timeout` | `10` | seconds to wait for PUBACK / SUBACK / ping answer / the rest of a packet |
+
+**TLS**: pass a context to have the broker's certificate checked (recommended), or `ssl=True` for an encrypted but unauthenticated
+channel (anybody between you and the broker can impersonate it; a warning is logged):
+
+```python
+import ssl
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)          # verifies the certificate (CERT_REQUIRED) and the host name
+ctx.load_verify_locations(cadata=open("/ca.der", "rb").read())   # your broker's CA, DER bytes
+mq = MQTTManager("broker.example.com", wifi=wm, ssl=ctx)         # port 8883 by default
+```
+
+Set the clock (`ntptime.settime()`) before connecting with a verifying context: certificates have validity dates.
 
 **Presence / Last Will**
 
@@ -239,9 +251,10 @@ inside `wm.check()`, so the broker may drop you meanwhile. Use asyncio if that m
   (`start()`, `connect()`, `check()`), so blocking and asyncio users get identical behaviour.
 * **`wifimanager` is a real dependency, not a copy:** `mqttmanager` uses its compatibility layer (`compat`), its logger, and its
   `is_connected()` / `start()` / `connect()` / `check()`.
-* **`umqtt.simple` does the protocol** (it is in the firmware already). `mqttmanager/client.py` subclasses it and replaces only `connect()`
-  (timeouts and TLS identical on every version). It adds a socket proxy that keeps a timeout on every read, drains packets umqtt.simple
-  leaves unread, wraps the packet id at 65535, and provides `unsubscribe()` on versions that lack it.
+* **`umqtt.simple` does the protocol**, connect included (it is in the firmware already). `mqttmanager/client.py` subclasses it to fix what
+  a device online for months cannot live with: a socket proxy keeps a timeout on every read (umqtt.simple's `wait_msg()` calls
+  `setblocking(True)`, which drops it; TLS sockets have no `settimeout()`, so it is kept on the TCP socket underneath), packets
+  umqtt.simple leaves unread are drained, and the packet id wraps at 65535.
 * Handlers run **outside** umqtt.simple's packet parsing (messages are collected first, then dispatched), so a handler can publish,
   subscribe, or even call `reconnect()` safely.
 
@@ -257,26 +270,28 @@ inside `wm.check()`, so the broker may drop you meanwhile. Use asyncio if that m
 | `broker refused the subscription to ...` | the broker's ACL forbids that topic |
 | `no answer to ping` | the broker or the network path stopped answering; it reconnects by itself |
 | `queue full: dropped message ...` | offline for long: raise `queue_size` (RAM!) or publish less often |
-| TLS errors | pass `ssl_params={"server_hostname": ..., "cadata": ...}` or an `ssl.SSLContext`; check the clock for certificate dates (NTP) |
+| TLS errors | with a verifying `SSLContext`: load the right CA (`load_verify_locations(cadata=...)`) and set the clock (NTP) before connecting, certificates have dates |
 
 Use `log_level="DEBUG"` to see every state change, ping and delivered message.
 
-## 10. Development and tests (host, no board needed)
+## 10. Development and tests (no board needed)
+
+The tests run on the **MicroPython v1.29.0 unix port**, the same interpreter as on the board (CPython is not supported).
+Build it and install the test runner once, as described in [ESP32-wifi §9](https://github.com/alezm00/ESP32-wifi#9-development-and-tests-no-board-needed)
+(`micropython -m mip install unittest-discover`), then:
 
 ```bash
-git submodule update --init                     # deps/ESP32-wifi: the dependency, and its fake radio for the tests
-python3 -m unittest discover -s tests           # supervisor on a virtual clock + fake broker; asyncio on a real loop
+git submodule update --init                     # deps/ESP32-wifi: the dependency, its fake radio and test helpers
+micropython -m unittest discover -s tests       # supervisor on a virtual clock + fake broker; asyncio on a real loop
 ```
 
-`test_legacy.py` reruns the whole suite against umqtt.simple 1.3.4 (MicroPython ≤ 1.22), 1.4.0 (1.23–1.24) and 1.6.0 (1.25–1.26). `tests/vendor/` holds
-unchanged copies of each version (MIT, micropython-lib). Run against one version: `UMQTT=1.3.4 python3 -m unittest discover -s tests`.
 `tests/fakes/broker.py` is an in-memory MQTT broker with knobs for crashes, stalls, refusals and missing PUBACKs.
+`tests/vendor/umqtt/simple.py` is an unchanged copy of umqtt.simple 1.8.0 (MIT, micropython-lib v1.29.0), because the unix port has
+none frozen in.
 
-`tests/mp_smoke.py` also runs on the **real MicroPython** (unix port):
-
-```bash
-MICROPYPATH=.frozen:tests/vendor/umqtt-1.8.1:tests/fakes:deps/ESP32-wifi/tests/fakes:deps/ESP32-wifi:. micropython tests/mp_smoke.py
-```
+**End-to-end with a real broker** (optional, needs `mosquitto` and `mosquitto-clients`): `tests/e2e/run.sh [path/to/micropython]` runs
+the device on MicroPython with real TCP sockets, crashes, freezes and restarts mosquitto around it, and prints what a real subscriber
+received.
 
 ### On-device checklist (needs a board and a broker)
 
@@ -287,4 +302,4 @@ MICROPYPATH=.frozen:tests/vendor/umqtt-1.8.1:tests/fakes:deps/ESP32-wifi/tests/f
 
 ## 11. License
 
-MIT — use it freely in your projects. The vendored `umqtt.simple` copies in `tests/vendor/` are MIT too (micropython-lib).
+MIT — use it freely in your projects. The vendored `umqtt.simple` copy in `tests/vendor/` is MIT too (micropython-lib).

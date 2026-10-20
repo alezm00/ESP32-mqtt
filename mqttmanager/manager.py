@@ -9,11 +9,14 @@ milliseconds". Three thin drivers run it, exactly like WiFiManager:
 
 The MQTT packets themselves are handled by umqtt.simple (see client.py).
 """
+import json
 import random
+from binascii import hexlify
 
+import machine
 from umqtt.simple import MQTTException
 from wifimanager import compat as C
-from wifimanager.compat import json, ticks_add, ticks_diff
+from wifimanager.compat import ticks_add, ticks_diff
 from wifimanager.log import Logger
 
 from .client import Client, connack_text
@@ -77,19 +80,14 @@ def _check_filter(flt, qos):
 
 
 def _default_client_id():
-    try:
-        import machine
-        from binascii import hexlify
-        return "esp32-" + hexlify(machine.unique_id()).decode()
-    except Exception:
-        return "esp32-%08x" % random.getrandbits(32)
+    return "esp32-" + hexlify(machine.unique_id()).decode()
 
 
 class MQTTManager:
     IDLE, NO_WIFI, CONNECTING, CONNECTED, BACKOFF = IDLE, NO_WIFI, CONNECTING, CONNECTED, BACKOFF
 
     def __init__(self, server, *, wifi=None, port=0, client_id=None, user=None, password=None,
-                 keepalive=60, clean_session=True, ssl=False, ssl_params=None,
+                 keepalive=60, clean_session=True, ssl=None,
                  connect_timeout=10, response_timeout=10,
                  status_topic=None, status_online="online", status_offline="offline", will=None,
                  queue_size=20, reply_suffix="/reply", poll_ms=100,
@@ -139,7 +137,7 @@ class MQTTManager:
             self.log.buffer_size = wlog.buffer_size
 
         c = Client(_b(self.client_id), server, port, _b(user), _b(password), keepalive,
-                   ssl, ssl_params, response_timeout)
+                   ssl, response_timeout)
         c.set_callback(self._on_raw)
         if status_topic:
             will = (status_topic, status_offline, True, 1)
@@ -148,6 +146,8 @@ class MQTTManager:
             _check_filter(w[0], w[3])
             c.set_last_will(_b(w[0]), _payload(w[1]), bool(w[2]), w[3])
         self._client = c
+        if ssl is True:
+            self.log.warning("TLS without certificate verification: pass an ssl.SSLContext with your CA to verify")
 
         # supervisor state
         self._sta = IDLE

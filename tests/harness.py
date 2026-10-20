@@ -1,16 +1,14 @@
 """Virtual-clock harness: WiFiManager on the fake radio + MQTTManager on the fake broker, no sleeping."""
 import _setup  # noqa: F401
-import os
-import shutil
-import tempfile
 
 import network
+import umqtt.simple as umqtt_module
+from _util import rmtree, tmpdir
 from broker import Broker
 from wifimanager import WiFiManager, compat
-import mqttmanager.client as client_module
 from mqttmanager import MQTTManager
 
-_orig = (compat.ticks_ms, compat.sleep_ms_blocking, compat.run_for, client_module.socket)
+_orig = (compat.ticks_ms, compat.sleep_ms_blocking, compat.run_for, umqtt_module.socket)
 W = network.WORLD
 SERVER = "broker.local"
 
@@ -25,20 +23,20 @@ class Sim:
         W.add_ap("Neighbor", "neighborpw", rssi=-90)   # scans are never empty (an empty scan = "scan failed")
         W.add_ap("Home", "homepass12", delay_ms=1000)
         self.broker = Broker(lambda: self.t, self.advance, hosts=(SERVER,))
-        client_module.socket = self.broker.socket_module()
-        self.dir = tempfile.mkdtemp()
+        umqtt_module.socket = self.broker.socket_module()
+        self.dir = tmpdir()
         self.states = []
         self.calls = []
 
     def close(self):
-        compat.ticks_ms, compat.sleep_ms_blocking, compat.run_for, client_module.socket = _orig
-        shutil.rmtree(self.dir, ignore_errors=True)
+        compat.ticks_ms, compat.sleep_ms_blocking, compat.run_for, umqtt_module.socket = _orig
+        rmtree(self.dir)
 
     def advance(self, ms):
         self.t += ms
 
     def wifi(self, **kw):
-        kw.setdefault("config_file", os.path.join(self.dir, "wifi_config.json"))
+        kw.setdefault("config_file", self.dir + "/wifi_config.json")
         kw.setdefault("config_mode", "never")
         kw.setdefault("log_level", "DEBUG")
         wm = WiFiManager(None, **kw)
@@ -58,6 +56,13 @@ class Sim:
 
     def run(self, mq, until=None, ms=60000):
         """Drive both supervisors on virtual time until `until()` is true or `ms` elapsed."""
+        try:
+            return self._run(mq, until, ms)
+        finally:
+            if self.broker.blocked_forever:  # every run checks it: tearDown failures abort MicroPython's runner
+                raise AssertionError("a blocking read without timeout would hang a real board")
+
+    def _run(self, mq, until, ms):
         wm = mq.wifi
         wm._boot()
         mq._boot()

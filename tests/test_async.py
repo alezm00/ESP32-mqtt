@@ -1,15 +1,13 @@
 """The asyncio driver on a real event loop and the real clock (fake radio, fake broker)."""
 import _setup  # noqa: F401
 import asyncio
-import os
-import shutil
-import tempfile
 import unittest
 
 import network
+import umqtt.simple as umqtt_module
+from _util import rmtree, tmpdir
 from broker import Broker
 from wifimanager import WiFiManager, compat
-import mqttmanager.client as client_module
 from mqttmanager import MQTTManager
 
 
@@ -18,13 +16,13 @@ class AsyncTests(unittest.TestCase):
         network.WORLD.reset()
         network.WORLD.add_ap("Home", "homepass12", delay_ms=50)
         self.broker = Broker(compat.ticks_ms, lambda ms: None)
-        self._socket = client_module.socket
-        client_module.socket = self.broker.socket_module()
-        self.dir = tempfile.mkdtemp()
+        self._socket = umqtt_module.socket
+        umqtt_module.socket = self.broker.socket_module()
+        self.dir = tmpdir()
 
     def tearDown(self):
-        client_module.socket = self._socket
-        shutil.rmtree(self.dir, ignore_errors=True)
+        umqtt_module.socket = self._socket
+        rmtree(self.dir)
 
     async def until(self, cond, ms=3000):
         for _ in range(ms // 20):
@@ -34,7 +32,7 @@ class AsyncTests(unittest.TestCase):
         return cond()
 
     def make(self, **kw):
-        wm = WiFiManager(None, config_file=os.path.join(self.dir, "wifi.json"), config_mode="never")
+        wm = WiFiManager(None, config_file=self.dir + "/wifi.json", config_mode="never")
         wm.log.console = False
         wm.add_network("Home", "homepass12")
         mq = MQTTManager("broker.local", wifi=wm, client_id="async", poll_ms=20, **kw)
