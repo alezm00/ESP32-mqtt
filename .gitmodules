@@ -1,0 +1,3 @@
+[submodule "deps/ESP32-wifi"]
+	path = deps/ESP32-wifi
+	url = ../ESP32-wifi.git
